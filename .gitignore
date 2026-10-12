@@ -1,0 +1,4 @@
+*.plist
+log.txt
+state.json
+__pycache__/

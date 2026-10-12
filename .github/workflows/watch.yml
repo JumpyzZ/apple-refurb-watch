@@ -1,0 +1,24 @@
+name: refurb-watch
+on:
+  schedule:
+    - cron: "*/5 * * * *"  # GitHub 最小间隔 5 分钟，高峰期可能延迟
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: refurb-watch
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 refurb_watch.py
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          STATE_FILE: state.json
+      - if: always()  # 失败时 failing 标记也要存下来，否则每轮都会发报错
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add -f state.json
+          git diff --cached --quiet || { git commit -qm "state" && git push -q; }
