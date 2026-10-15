@@ -12,7 +12,7 @@
 """
 import base64, hashlib, hmac, json, os, sys, time, urllib.request
 
-LIST_URL = "https://www.apple.com/nz/shop/refurbished/mac/macbook-pro"
+LIST_URL = "https://www.apple.com/nz/shop/refurbished/mac"  # 含全部 Mac 机型
 STATE = os.environ.get("STATE_FILE") or os.path.expanduser("~/refurb-watch/state.json")
 
 # 想盯的配置，改这里。chip 匹配标题（不分大小写），"m5 chip" 不会误中 "M5 Pro chip"
@@ -20,6 +20,7 @@ TARGETS = [
     {"chip": "m5 chip", "refurbClearModel": "macbookpro", "dimensionScreensize": "14inch",
      "tsMemorySize": "32gb", "dimensionCapacity": "1tb"},
     {"chip": "m5 pro chip", "refurbClearModel": "macbookpro", "tsMemorySize": "48gb"},  # 14/16 寸、任意硬盘
+    {"chip": "m6 chip", "refurbClearModel": "macmini", "tsMemorySize": "32gb"},  # 任意硬盘
 ]
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129 Safari/537.36"
@@ -79,6 +80,11 @@ def selftest():
     assert not matches(tile(pro))                                  # Pro 32GB 不要
     assert matches(tile(pro, tsMemorySize="48gb", dimensionScreensize="16inch", dimensionCapacity="2tb"))
     assert not matches(tile(m5.replace("M5", "M5 Max"), tsMemorySize="48gb"))
+    mini = "Refurbished Mac mini Apple M6 Chip with 12‑Core CPU and 12‑Core GPU"
+    mini_dims = {"refurbClearModel": "macmini", "tsMemorySize": "32gb", "dimensionCapacity": "512gb"}
+    assert matches({"title": mini, "filters": {"dimensions": mini_dims}})
+    assert not matches({"title": mini, "filters": {"dimensions": dict(mini_dims, tsMemorySize="24gb")}})
+    assert not matches({"title": mini.replace("M6", "M5 Pro"), "filters": {"dimensions": mini_dims}})
     print("selftest ok")
 
 
