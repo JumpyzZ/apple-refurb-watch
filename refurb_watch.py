@@ -25,11 +25,19 @@ TARGETS = [
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129 Safari/537.36"
 MARK = "window.REFURB_GRID_BOOTSTRAP = "
+ALERT_AFTER = 3  # 连续失败几次才报警（每 5 分钟一次 ≈ 15 分钟）
 
 
 def fetch_tiles():
     req = urllib.request.Request(LIST_URL, headers={"User-Agent": UA})
-    html = urllib.request.urlopen(req, timeout=30).read().decode()
+    for attempt in (1, 2):  # Apple 偶发 503，隔 10 秒重试一次
+        try:
+            html = urllib.request.urlopen(req, timeout=30).read().decode()
+            break
+        except OSError:  # HTTPError/URLError/超时 都是 OSError
+            if attempt == 2:
+                raise
+            time.sleep(10)
     i = html.index(MARK) + len(MARK)  # 页面改版会在这里抛 ValueError
     return json.JSONDecoder().raw_decode(html[i:])[0]["tiles"]
 
@@ -61,7 +69,7 @@ def load_state():
         with open(STATE) as f:
             return json.load(f)
     except FileNotFoundError:
-        return {"seen": [], "failing": False}
+        return {"seen": [], "fails": 0}
 
 
 def save_state(s):
@@ -85,6 +93,26 @@ def selftest():
     assert matches({"title": mini, "filters": {"dimensions": mini_dims}})
     assert not matches({"title": mini, "filters": {"dimensions": dict(mini_dims, tsMemorySize="24gb")}})
     assert not matches({"title": mini.replace("M6", "M5 Pro"), "filters": {"dimensions": mini_dims}})
+
+    # 报警节奏：失败 1、2 次静默 exit 0，第 3 次报警并 exit 1，之后静默 exit 0，恢复发一次
+    import tempfile, urllib.error
+    g, sent, codes = globals(), [], []
+    saved = {k: g[k] for k in ("STATE", "fetch_tiles", "notify")}
+    def boom(): raise urllib.error.HTTPError(LIST_URL, 503, "Service Unavailable", None, None)
+    g.update(STATE=tempfile.mktemp(), notify=sent.append, fetch_tiles=boom)
+    sys.argv = ["x"]
+    try:
+        for _ in range(4):
+            try: main()
+            except SystemExit as e: codes.append(e.code)
+        assert codes == [0, 0, 1, 0] and len(sent) == 1 and sent[0].startswith("⚠️"), (codes, sent)
+        g["fetch_tiles"] = lambda: []
+        main()
+        assert len(sent) == 2 and sent[1].startswith("✅") and load_state()["fails"] == 0, sent
+        main()
+        assert len(sent) == 2  # 恢复后不再重复发
+    finally:
+        os.remove(g["STATE"]); g.update(saved)
     print("selftest ok")
 
 
@@ -97,15 +125,21 @@ def main():
         return
 
     state = load_state()
+    fails = state.get("fails", ALERT_AFTER if state.get("failing") else 0)  # 兼容旧 state 的 failing 布尔
     try:
         hits = [t for t in fetch_tiles() if matches(t)]
     except Exception as e:
-        print(f"检查失败: {e!r}", file=sys.stderr)
-        if not state["failing"] and "--dry-run" not in args:  # 只在第一次失败时提醒，避免刷屏
-            notify(f"⚠️ 翻新机监控出错（可能页面改版）：{e!r}")
-        state["failing"] = True
+        fails += 1
+        print(f"检查失败 (连续第 {fails} 次): {e!r}", file=sys.stderr)
+        if fails == ALERT_AFTER and "--dry-run" not in args:  # 偶发抖动不吵人；只在刚达到阈值时提醒一次
+            notify(f"⚠️ 翻新机监控连续 {fails} 次失败（约 {fails * 5} 分钟），可能 Apple 维护或页面改版：{e!r}")
+        state["fails"] = fails
+        state.pop("failing", None)
         save_state(state)
-        sys.exit(1)
+        sys.exit(1 if fails == ALERT_AFTER else 0)  # 只在报警那次标红：维护几小时也只收一封 GitHub 失败邮件
+
+    if fails >= ALERT_AFTER and "--dry-run" not in args:
+        notify(f"✅ 翻新机监控已恢复（此前连续失败 {fails} 次）")
 
     if "--dry-run" in args:
         for t in hits:
@@ -119,7 +153,7 @@ def main():
         notify(f"🍎 翻新机补货！\n{t['title']}\n{t['price']['currentPrice']['amount']}\n{url}")
     # 只记当前有货的：卖完再补货会再次提醒
     # day 每天变一次 → 云端每天至少一次提交，防止 GitHub 60 天无活动停掉定时任务
-    state = {"seen": [t["partNumber"] for t in hits], "failing": False, "day": time.strftime("%F")}
+    state = {"seen": [t["partNumber"] for t in hits], "fails": 0, "day": time.strftime("%F")}
     save_state(state)
     print(time.strftime("%F %T"), f"匹配 {len(hits)}，新通知 {len(new)}")
 
